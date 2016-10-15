@@ -1,11 +1,12 @@
+#pragma once
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <unistd.h>
 #include "webrtc/modules/audio_device/include/audio_device.h"
 #include "webrtc/common_audio/resampler/include/resampler.h"
-#include "webrtc/modules/audio_processing/aec/include/echo_cancellation.h"
+#include "webrtc/modules/audio_processing/aec/echo_cancellation.h"
 #include "webrtc/common_audio/vad/include/webrtc_vad.h"
-#include "log.cpp"
 
 #define SAMPLE_RATE			32000
 #define SAMPLES_PER_10MS	(SAMPLE_RATE/100)
@@ -65,17 +66,17 @@ private:
 	
 public:
 	AudioTransportImpl(webrtc::AudioDeviceModule* audio){
-		resampler_in = new webrtc::Resampler(48000, SAMPLE_RATE, webrtc::kResamplerSynchronous);
-		resampler_out = new webrtc::Resampler(SAMPLE_RATE, 48000, webrtc::kResamplerSynchronous);
+		resampler_in = new webrtc::Resampler(48000, SAMPLE_RATE, 1);
+		resampler_out = new webrtc::Resampler(SAMPLE_RATE, 48000,1);
 		buffer = new ChunkBuffer(10, SAMPLES_PER_10MS * sizeof(int16_t));
 		int ret;
 		
-		WebRtcAec_Create(&aec);
+		aec = webrtc::WebRtcAec_Create();
 		assert(aec);
-		ret = WebRtcAec_Init(aec, SAMPLE_RATE, SAMPLE_RATE);
+		ret = webrtc::WebRtcAec_Init(aec, SAMPLE_RATE, SAMPLE_RATE);
 		assert(ret == 0);
 		
-		WebRtcVad_Create(&vad);
+		vad = WebRtcVad_Create();
 		assert(vad);
 		ret = WebRtcVad_Init(vad);
 		assert(ret == 0);
@@ -85,15 +86,15 @@ public:
 		delete resampler_in;
 		delete resampler_out;
 		delete buffer;
-		WebRtcAec_Free(aec);
+		webrtc::WebRtcAec_Free(aec);
 		WebRtcVad_Free(vad);
 	}
 
    virtual int32_t RecordedDataIsAvailable(
 		const void* audioSamples,
-		const uint32_t nSamples,
-		const uint8_t nBytesPerSample,
-		const uint8_t nChannels,
+		const size_t nSamples,
+		const size_t nBytesPerSample,
+		const size_t nChannels,
 		const uint32_t samplesPerSec,
 		const uint32_t totalDelayMS,
 		const int32_t clockDrift,
@@ -102,7 +103,7 @@ public:
 		uint32_t& newMicLevel)
 	{
 		/*
-		log_debug("record %d %d %d %d %d %d %d %d", nSamples,
+		printf("record %d %d %d %d %d %d %d %d", nSamples,
 			nBytesPerSample, nChannels,
 			samplesPerSec, totalDelayMS,
 			clockDrift, currentMicLevel, keyPressed);
@@ -113,25 +114,25 @@ public:
 		if(ret == 0){
 			return 0;
 		}
-			log_debug("");
+			printf("");
 
 		int16_t *samples = (int16_t *)buffer->push();
 		if(samples == NULL){
-			log_debug("drop oldest recorded frame");
+			printf("drop oldest recorded frame");
 			buffer->pop();
 			samples = (int16_t *)buffer->push();
 			assert(samples);
 		}
 
 		int maxLen = SAMPLES_PER_10MS;
-		int outLen = 0;
+		size_t outLen = 0;
 		resampler_in->Push((const int16_t*)audioSamples,
 			nSamples,
 			samples,
 		 	maxLen, outLen);
 
 			/*
-		//log_debug("record %d bytes", outLen*2);
+		//printf("record %d bytes", outLen*2);
 		ret = WebRtcAec_Process(aec,
 							  samples,
 							  NULL,
@@ -142,13 +143,13 @@ public:
 							  0);
 		assert(ret != -1);
 		if(ret == -1){
-			log_debug("%d %d", ret, WebRtcAec_get_error_code(aec));
+			printf("%d %d", ret, WebRtcAec_get_error_code(aec));
 		}
 		int status = 0;
 		int err = WebRtcAec_get_echo_status(aec, &status);
-		//log_debug("%d %d", status, err);
+		//printf("%d %d", status, err);
 		if(status == 1){
-			//log_debug("wwwwwwwwwwwwwwwwwwwww");
+			//printf("wwwwwwwwwwwwwwwwwwwww");
 		}
 		*/
 
@@ -156,23 +157,25 @@ public:
 	}
 
 	virtual int32_t NeedMorePlayData(
-		const uint32_t nSamples,
-		const uint8_t nBytesPerSample,
-		const uint8_t nChannels,
+		const size_t nSamples,
+		const size_t nBytesPerSample,
+		const size_t nChannels,
 		const uint32_t samplesPerSec,
 		void* audioSamples,
-		uint32_t& nSamplesOut)
+		size_t& nSamplesOut,
+		int64_t* elapsed_time_ms,
+		int64_t* ntp_time_ms)
 	{
 		// TODO: multithread lock
 		/*
-		log_debug("playout %d %d %d %d", nSamples,
+		printf("playout %d %d %d %d", nSamples,
 			nBytesPerSample, nChannels,
 			samplesPerSec);
 			*/
 
 		int16_t *samples = (int16_t *)buffer->pop();
 		if(samples == NULL){
-			log_debug("no data for playout");
+			printf("no data for playout");
 			int16_t *ptr16Out = (int16_t *)audioSamples;
 			for(int i = 0; i < nSamples; i++){
 				*ptr16Out = 0; // left
@@ -189,7 +192,7 @@ public:
 		//assert(ret == 0);
 
 
-		int outLen = 0;
+		size_t outLen = 0;
 
 		int16_t samplesOut[48000];
 		resampler_out->Push(samples,
@@ -197,7 +200,7 @@ public:
 			samplesOut,
 		 	nSamples * nBytesPerSample, outLen);
 		
-		//log_debug("play %d bytes", outLen * 2);
+		//printf("play %d bytes", outLen * 2);
 		
 		int16_t *ptr16Out = (int16_t *)audioSamples;
 		int16_t *ptr16In = samplesOut;
@@ -213,7 +216,7 @@ public:
 		nSamplesOut = nSamples;
 		return 0;
 	}
-
+/*
 	virtual int OnDataAvailable(
 		const int voe_channels[],
 		int number_of_voe_channels,
@@ -226,16 +229,29 @@ public:
 		bool key_pressed,
 		bool need_audio_processing)
 	{
-		log_debug("aaaa");
+		printf("aaaa");
 		return 0;
 	}
+*/
+	virtual void PullRenderData(int bits_per_sample,
+                              int sample_rate,
+                              size_t number_of_channels,
+                              size_t number_of_frames,
+                              void* audio_data,
+                              int64_t* elapsed_time_ms,
+                              int64_t* ntp_time_ms) {return;}
 
-public:
+	virtual void PushCaptureData(int voe_channel,
+                               const void* audio_data,
+                               int bits_per_sample,
+                               int sample_rate,
+                               size_t number_of_channels,
+                               size_t number_of_frames) {return;}
 };
 
 int main(int argc, char **argv){
 	webrtc::AudioDeviceModule *audio;
-	audio = webrtc::CreateAudioDeviceModule(0, webrtc::AudioDeviceModule::kPlatformDefaultAudio);
+	audio = webrtc::AudioDeviceModule::Create(0, webrtc::AudioDeviceModule::kPlatformDefaultAudio);
 	assert(audio);
 	audio->Init();
 	
@@ -269,7 +285,7 @@ int main(int argc, char **argv){
 	if(ret == -1){
 		uint32_t rate = 0;
 		audio->PlayoutSampleRate(&rate);
-		log_debug("use resampler for playout, device samplerate: %u", rate);
+		printf("use resampler for playout, device samplerate: %u", rate);
 	}
 	ret = audio->InitPlayout();
 
@@ -278,7 +294,7 @@ int main(int argc, char **argv){
 	if(ret == -1){
 		uint32_t rate = 0;
 		audio->RecordingSampleRate(&rate);
-		log_debug("use resampler for recording, device samplerate: %u", rate);
+		printf("use resampler for recording, device samplerate: %u", rate);
 	}
 	ret = audio->InitRecording();
 	
@@ -287,12 +303,11 @@ int main(int argc, char **argv){
 	ret = audio->RegisterAudioCallback(&callback);
 
 	ret = audio->StartPlayout();
-	log_debug("");
+	printf("");
 	ret = audio->StartRecording();
-	log_debug("");
+	printf("");
 	
 	sleep(2);
 	getchar();
 	return 0;
 }
-
